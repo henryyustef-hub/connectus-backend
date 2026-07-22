@@ -24,6 +24,8 @@ const UserSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     avatar: { type: String, default: 'U' },
+    profilePhoto: { type: String, default: '' },
+    bannerPhoto: { type: String, default: '' },
     joined: { type: Date, default: Date.now },
     bio: { type: String, default: '' }
 });
@@ -76,12 +78,21 @@ const VideoSchema = new mongoose.Schema({
     time: { type: Date, default: Date.now }
 });
 
+const LiveStreamSchema = new mongoose.Schema({
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    userName: { type: String, required: true },
+    active: { type: Boolean, default: true },
+    viewers: { type: Number, default: 0 },
+    started: { type: Date, default: Date.now }
+});
+
 const User = mongoose.model('User', UserSchema);
 const Post = mongoose.model('Post', PostSchema);
 const ShopItem = mongoose.model('ShopItem', ShopItemSchema);
 const Message = mongoose.model('Message', MessageSchema);
 const Photo = mongoose.model('Photo', PhotoSchema);
 const Video = mongoose.model('Video', VideoSchema);
+const LiveStream = mongoose.model('LiveStream', LiveStreamSchema);
 
 // ============ AUTH ENDPOINTS ============
 
@@ -113,7 +124,10 @@ app.post('/api/register', async (req, res) => {
                 id: user._id, 
                 name, 
                 email, 
-                avatar: user.avatar 
+                avatar: user.avatar,
+                profilePhoto: user.profilePhoto || '',
+                bannerPhoto: user.bannerPhoto || '',
+                bio: user.bio || ''
             }, 
             token 
         });
@@ -140,8 +154,10 @@ app.post('/api/login', async (req, res) => {
                 id: user._id, 
                 name: user.name, 
                 email, 
-                avatar: user.avatar, 
-                bio: user.bio || '' 
+                avatar: user.avatar,
+                profilePhoto: user.profilePhoto || '',
+                bannerPhoto: user.bannerPhoto || '',
+                bio: user.bio || ''
             }, 
             token 
         });
@@ -162,14 +178,18 @@ app.post('/api/verify', async (req, res) => {
                 id: user._id, 
                 name: user.name, 
                 email: user.email, 
-                avatar: user.avatar, 
-                bio: user.bio || '' 
+                avatar: user.avatar,
+                profilePhoto: user.profilePhoto || '',
+                bannerPhoto: user.bannerPhoto || '',
+                bio: user.bio || ''
             } 
         });
     } catch (error) {
         res.status(401).json({ error: 'Invalid token' });
     }
 });
+
+// ============ USER ENDPOINTS ============
 
 app.get('/api/users/:userId', async (req, res) => {
     try {
@@ -195,13 +215,19 @@ app.get('/api/user/:userId', async (req, res) => {
 app.put('/api/user/:userId', async (req, res) => {
     try {
         const userId = req.params.userId;
-        const { bio } = req.body;
-        const user = await User.findByIdAndUpdate(userId, { bio }, { new: true }).select('-password');
+        const { bio, profilePhoto, bannerPhoto } = req.body;
+        const updateData = {};
+        if (bio !== undefined) updateData.bio = bio;
+        if (profilePhoto !== undefined) updateData.profilePhoto = profilePhoto;
+        if (bannerPhoto !== undefined) updateData.bannerPhoto = bannerPhoto;
+        const user = await User.findByIdAndUpdate(userId, updateData, { new: true }).select('-password');
         res.json(user);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
+
+// ============ POST ENDPOINTS ============
 
 app.post('/api/posts', async (req, res) => {
     try {
@@ -235,6 +261,8 @@ app.put('/api/posts/:postId/like', async (req, res) => {
     }
 });
 
+// ============ SHOP ENDPOINTS ============
+
 app.post('/api/shop', async (req, res) => {
     try {
         const item = new ShopItem(req.body);
@@ -266,6 +294,8 @@ app.put('/api/shop/:itemId/share', async (req, res) => {
     }
 });
 
+// ============ MESSAGE ENDPOINTS ============
+
 app.post('/api/messages', async (req, res) => {
     try {
         const message = new Message(req.body);
@@ -292,6 +322,23 @@ app.get('/api/messages/:userId/:otherId', async (req, res) => {
     }
 });
 
+app.get('/api/messages/:userId/all', async (req, res) => {
+    try {
+        const userId = req.params.userId;
+        const messages = await Message.find({
+            $or: [
+                { from: userId },
+                { to: userId }
+            ]
+        }).sort({ time: -1 });
+        res.json(messages);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============ PHOTO ENDPOINTS ============
+
 app.post('/api/photos', async (req, res) => {
     try {
         const photo = new Photo(req.body);
@@ -311,6 +358,8 @@ app.get('/api/photos', async (req, res) => {
     }
 });
 
+// ============ VIDEO ENDPOINTS ============
+
 app.post('/api/videos', async (req, res) => {
     try {
         const video = new Video(req.body);
@@ -325,6 +374,63 @@ app.get('/api/videos', async (req, res) => {
     try {
         const videos = await Video.find().sort({ time: -1 });
         res.json(videos);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============ LIVE STREAM ENDPOINTS ============
+
+app.post('/api/live/start', async (req, res) => {
+    try {
+        const { userId, userName } = req.body;
+        // End any existing live stream
+        await LiveStream.updateMany({ userId }, { active: false });
+        const stream = new LiveStream({ userId, userName, active: true });
+        await stream.save();
+        res.json({ success: true, stream });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/live/stop', async (req, res) => {
+    try {
+        const { userId } = req.body;
+        await LiveStream.updateOne({ userId }, { active: false });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/live/active', async (req, res) => {
+    try {
+        const streams = await LiveStream.find({ active: true });
+        res.json(streams);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/live/:userId', async (req, res) => {
+    try {
+        const stream = await LiveStream.findOne({ userId: req.params.userId, active: true });
+        res.json(stream || null);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.put('/api/live/:userId/viewers', async (req, res) => {
+    try {
+        const { count } = req.body;
+        const stream = await LiveStream.findOne({ userId: req.params.userId, active: true });
+        if (stream) {
+            stream.viewers = count;
+            await stream.save();
+        }
+        res.json({ success: true });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
