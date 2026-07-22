@@ -29,7 +29,8 @@ const UserSchema = new mongoose.Schema({
     joined: { type: Date, default: Date.now },
     bio: { type: String, default: '' },
     connections: { type: Array, default: [] },
-    connectionRequests: { type: Array, default: [] }
+    connectionRequests: { type: Array, default: [] },
+    liveJoinRequests: { type: Array, default: [] } // { fromUserId, toUserId, status: 'pending'|'accepted'|'declined' }
 });
 
 const PostSchema = new mongoose.Schema({
@@ -86,6 +87,7 @@ const LiveStreamSchema = new mongoose.Schema({
     userName: { type: String, required: true },
     active: { type: Boolean, default: true },
     viewers: { type: Number, default: 0 },
+    joinedUsers: { type: Array, default: [] },
     started: { type: Date, default: Date.now }
 });
 
@@ -130,7 +132,10 @@ app.post('/api/register', async (req, res) => {
                 avatar: user.avatar,
                 profilePhoto: user.profilePhoto || '',
                 bannerPhoto: user.bannerPhoto || '',
-                bio: user.bio || ''
+                bio: user.bio || '',
+                connections: [],
+                connectionRequests: [],
+                liveJoinRequests: []
             }, 
             token 
         });
@@ -162,7 +167,8 @@ app.post('/api/login', async (req, res) => {
                 bannerPhoto: user.bannerPhoto || '',
                 bio: user.bio || '',
                 connections: user.connections || [],
-                connectionRequests: user.connectionRequests || []
+                connectionRequests: user.connectionRequests || [],
+                liveJoinRequests: user.liveJoinRequests || []
             }, 
             token 
         });
@@ -188,7 +194,8 @@ app.post('/api/verify', async (req, res) => {
                 bannerPhoto: user.bannerPhoto || '',
                 bio: user.bio || '',
                 connections: user.connections || [],
-                connectionRequests: user.connectionRequests || []
+                connectionRequests: user.connectionRequests || [],
+                liveJoinRequests: user.liveJoinRequests || []
             } 
         });
     } catch (error) {
@@ -198,6 +205,7 @@ app.post('/api/verify', async (req, res) => {
 
 // ============ CONNECTION ENDPOINTS ============
 
+// Send connection request
 app.post('/api/connect/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
@@ -224,6 +232,7 @@ app.post('/api/connect/:userId', async (req, res) => {
     }
 });
 
+// Accept connection request
 app.post('/api/connect/accept/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
@@ -246,6 +255,42 @@ app.post('/api/connect/accept/:userId', async (req, res) => {
     }
 });
 
+// Decline connection request
+app.post('/api/connect/decline/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { targetUserId } = req.body;
+        
+        await User.findByIdAndUpdate(targetUserId, {
+            $pull: { connectionRequests: userId }
+        });
+        
+        res.json({ success: true, message: 'Connection declined' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Disconnect
+app.post('/api/connect/disconnect/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { targetUserId } = req.body;
+        
+        await User.findByIdAndUpdate(userId, {
+            $pull: { connections: targetUserId }
+        });
+        await User.findByIdAndUpdate(targetUserId, {
+            $pull: { connections: userId }
+        });
+        
+        res.json({ success: true, message: 'Disconnected' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get connection requests
 app.get('/api/connect/requests/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
@@ -257,6 +302,85 @@ app.get('/api/connect/requests/:userId', async (req, res) => {
         }).select('-password');
         
         res.json(requests);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============ LIVE JOIN REQUESTS ============
+
+// Request to join live
+app.post('/api/live/join-request', async (req, res) => {
+    try {
+        const { fromUserId, toUserId } = req.body;
+        
+        const user = await User.findById(toUserId);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        
+        // Check if already requested
+        if (user.liveJoinRequests && user.liveJoinRequests.some(r => r.fromUserId === fromUserId && r.status === 'pending')) {
+            return res.status(400).json({ error: 'Request already sent' });
+        }
+        
+        await User.findByIdAndUpdate(toUserId, {
+            $push: { liveJoinRequests: { fromUserId, status: 'pending' } }
+        });
+        
+        res.json({ success: true, message: 'Join request sent' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Accept join request
+app.post('/api/live/join-accept', async (req, res) => {
+    try {
+        const { hostUserId, requesterUserId } = req.body;
+        
+        await User.findByIdAndUpdate(hostUserId, {
+            $pull: { liveJoinRequests: { fromUserId: requesterUserId } }
+        });
+        
+        // Add to live stream joined users
+        await LiveStream.updateOne(
+            { userId: hostUserId, active: true },
+            { $addToSet: { joinedUsers: requesterUserId } }
+        );
+        
+        res.json({ success: true, message: 'Join request accepted' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Decline join request
+app.post('/api/live/join-decline', async (req, res) => {
+    try {
+        const { hostUserId, requesterUserId } = req.body;
+        
+        await User.findByIdAndUpdate(hostUserId, {
+            $pull: { liveJoinRequests: { fromUserId: requesterUserId } }
+        });
+        
+        res.json({ success: true, message: 'Join request declined' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get live join requests for a user
+app.get('/api/live/join-requests/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const user = await User.findById(userId);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        
+        const pendingRequests = user.liveJoinRequests?.filter(r => r.status === 'pending') || [];
+        const requesters = await User.find({
+            _id: { $in: pendingRequests.map(r => r.fromUserId) }
+        }).select('-password');
+        
+        res.json(requesters);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
