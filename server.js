@@ -27,7 +27,9 @@ const UserSchema = new mongoose.Schema({
     profilePhoto: { type: String, default: '' },
     bannerPhoto: { type: String, default: '' },
     joined: { type: Date, default: Date.now },
-    bio: { type: String, default: '' }
+    bio: { type: String, default: '' },
+    connections: { type: Array, default: [] }, // Users who have connected
+    connectionRequests: { type: Array, default: [] } // Pending requests
 });
 
 const PostSchema = new mongoose.Schema({
@@ -39,7 +41,8 @@ const PostSchema = new mongoose.Schema({
     video: { type: String },
     likes: { type: Number, default: 0 },
     comments: { type: Array, default: [] },
-    time: { type: Date, default: Date.now }
+    time: { type: Date, default: Date.now },
+    isPublic: { type: Boolean, default: true }
 });
 
 const ShopItemSchema = new mongoose.Schema({
@@ -157,7 +160,9 @@ app.post('/api/login', async (req, res) => {
                 avatar: user.avatar,
                 profilePhoto: user.profilePhoto || '',
                 bannerPhoto: user.bannerPhoto || '',
-                bio: user.bio || ''
+                bio: user.bio || '',
+                connections: user.connections || [],
+                connectionRequests: user.connectionRequests || []
             }, 
             token 
         });
@@ -181,11 +186,87 @@ app.post('/api/verify', async (req, res) => {
                 avatar: user.avatar,
                 profilePhoto: user.profilePhoto || '',
                 bannerPhoto: user.bannerPhoto || '',
-                bio: user.bio || ''
+                bio: user.bio || '',
+                connections: user.connections || [],
+                connectionRequests: user.connectionRequests || []
             } 
         });
     } catch (error) {
         res.status(401).json({ error: 'Invalid token' });
+    }
+});
+
+// ============ CONNECTION ENDPOINTS ============
+
+// Send connection request
+app.post('/api/connect/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { targetUserId } = req.body;
+        
+        const targetUser = await User.findById(targetUserId);
+        if (!targetUser) return res.status(404).json({ error: 'User not found' });
+        
+        // Check if already connected
+        if (targetUser.connections && targetUser.connections.includes(userId)) {
+            return res.status(400).json({ error: 'Already connected' });
+        }
+        
+        // Check if request already sent
+        if (targetUser.connectionRequests && targetUser.connectionRequests.includes(userId)) {
+            return res.status(400).json({ error: 'Request already sent' });
+        }
+        
+        // Add request
+        await User.findByIdAndUpdate(targetUserId, {
+            $push: { connectionRequests: userId }
+        });
+        
+        res.json({ success: true, message: 'Connection request sent' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Accept connection request
+app.post('/api/connect/accept/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { targetUserId } = req.body;
+        
+        // Remove from requests
+        await User.findByIdAndUpdate(targetUserId, {
+            $pull: { connectionRequests: userId }
+        });
+        
+        // Add to both connections
+        await User.findByIdAndUpdate(userId, {
+            $push: { connections: targetUserId }
+        });
+        await User.findByIdAndUpdate(targetUserId, {
+            $push: { connections: userId }
+        });
+        
+        res.json({ success: true, message: 'Connection accepted' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get connection requests
+app.get('/api/connect/requests/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const user = await User.findById(userId);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        
+        const requests = await User.find({
+            _id: { $in: user.connectionRequests || [] }
+        }).select('-password');
+        
+        res.json(requests);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
@@ -231,8 +312,8 @@ app.put('/api/user/:userId', async (req, res) => {
 
 app.post('/api/posts', async (req, res) => {
     try {
-        const { userId, userName, userAvatar, content, image, video } = req.body;
-        const post = new Post({ userId, userName, userAvatar, content, image, video });
+        const { userId, userName, userAvatar, content, image, video, isPublic } = req.body;
+        const post = new Post({ userId, userName, userAvatar, content, image, video, isPublic: isPublic !== false });
         await post.save();
         res.json(post);
     } catch (error) {
@@ -244,6 +325,30 @@ app.get('/api/posts', async (req, res) => {
     try {
         const posts = await Post.find().sort({ time: -1 });
         res.json(posts);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/posts/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { viewerId } = req.query;
+        
+        const posts = await Post.find({ userId }).sort({ time: -1 });
+        
+        // Check if viewer is connected
+        const viewer = await User.findById(viewerId);
+        const targetUser = await User.findById(userId);
+        
+        const isConnected = viewer && targetUser && 
+            viewer.connections && viewer.connections.includes(userId);
+        
+        // If not connected and not the owner, only show public posts
+        const filteredPosts = viewerId === userId || isConnected ? 
+            posts : posts.filter(p => p.isPublic !== false);
+        
+        res.json(filteredPosts);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -261,7 +366,6 @@ app.put('/api/posts/:postId/like', async (req, res) => {
     }
 });
 
-// ============ DELETE POST ============
 app.delete('/api/posts/:postId', async (req, res) => {
     try {
         const post = await Post.findById(req.params.postId);
@@ -306,7 +410,6 @@ app.put('/api/shop/:itemId/share', async (req, res) => {
     }
 });
 
-// ============ DELETE SHOP ITEM ============
 app.delete('/api/shop/:itemId', async (req, res) => {
     try {
         const item = await ShopItem.findById(req.params.itemId);
@@ -382,7 +485,6 @@ app.get('/api/photos', async (req, res) => {
     }
 });
 
-// ============ DELETE PHOTO ============
 app.delete('/api/photos/:photoId', async (req, res) => {
     try {
         const photo = await Photo.findById(req.params.photoId);
@@ -415,7 +517,6 @@ app.get('/api/videos', async (req, res) => {
     }
 });
 
-// ============ DELETE VIDEO ============
 app.delete('/api/videos/:videoId', async (req, res) => {
     try {
         const video = await Video.findById(req.params.videoId);
@@ -432,8 +533,8 @@ app.delete('/api/videos/:videoId', async (req, res) => {
 app.post('/api/live/start', async (req, res) => {
     try {
         const { userId, userName } = req.body;
-        // End any existing live stream
-        await LiveStream.updateMany({ userId }, { active: false });
+        // End any existing live stream for this user
+        await LiveStream.updateMany({ userId, active: true }, { active: false });
         const stream = new LiveStream({ userId, userName, active: true });
         await stream.save();
         res.json({ success: true, stream });
@@ -445,8 +546,18 @@ app.post('/api/live/start', async (req, res) => {
 app.post('/api/live/stop', async (req, res) => {
     try {
         const { userId } = req.body;
-        await LiveStream.updateOne({ userId }, { active: false });
+        await LiveStream.updateOne({ userId, active: true }, { active: false });
         res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// STOP ALL LIVES - Admin function to clear all active streams
+app.post('/api/live/stop-all', async (req, res) => {
+    try {
+        await LiveStream.updateMany({ active: true }, { active: false });
+        res.json({ success: true, message: 'All live streams stopped' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
