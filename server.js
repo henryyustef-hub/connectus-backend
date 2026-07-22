@@ -261,6 +261,18 @@ app.put('/api/posts/:postId/like', async (req, res) => {
     }
 });
 
+// ============ DELETE POST ============
+app.delete('/api/posts/:postId', async (req, res) => {
+    try {
+        const post = await Post.findById(req.params.postId);
+        if (!post) return res.status(404).json({ error: 'Post not found' });
+        await Post.deleteOne({ _id: req.params.postId });
+        res.json({ success: true, message: 'Post deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // ============ SHOP ENDPOINTS ============
 
 app.post('/api/shop', async (req, res) => {
@@ -289,6 +301,18 @@ app.put('/api/shop/:itemId/share', async (req, res) => {
         item.shares += 1;
         await item.save();
         res.json({ shares: item.shares });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============ DELETE SHOP ITEM ============
+app.delete('/api/shop/:itemId', async (req, res) => {
+    try {
+        const item = await ShopItem.findById(req.params.itemId);
+        if (!item) return res.status(404).json({ error: 'Item not found' });
+        await ShopItem.deleteOne({ _id: req.params.itemId });
+        res.json({ success: true, message: 'Item deleted successfully' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -358,6 +382,18 @@ app.get('/api/photos', async (req, res) => {
     }
 });
 
+// ============ DELETE PHOTO ============
+app.delete('/api/photos/:photoId', async (req, res) => {
+    try {
+        const photo = await Photo.findById(req.params.photoId);
+        if (!photo) return res.status(404).json({ error: 'Photo not found' });
+        await Photo.deleteOne({ _id: req.params.photoId });
+        res.json({ success: true, message: 'Photo deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // ============ VIDEO ENDPOINTS ============
 
 app.post('/api/videos', async (req, res) => {
@@ -374,6 +410,18 @@ app.get('/api/videos', async (req, res) => {
     try {
         const videos = await Video.find().sort({ time: -1 });
         res.json(videos);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============ DELETE VIDEO ============
+app.delete('/api/videos/:videoId', async (req, res) => {
+    try {
+        const video = await Video.findById(req.params.videoId);
+        if (!video) return res.status(404).json({ error: 'Video not found' });
+        await Video.deleteOne({ _id: req.params.videoId });
+        res.json({ success: true, message: 'Video deleted successfully' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
