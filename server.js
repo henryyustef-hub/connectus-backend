@@ -245,7 +245,7 @@ app.post('/api/verify', async (req, res) => {
     }
 });
 
-// ============ LIVE STREAM ENDPOINTS (FIXED) ============
+// ============ LIVE STREAM ENDPOINTS ============
 
 // Start a live stream
 app.post('/api/live/start', async (req, res) => {
@@ -271,7 +271,7 @@ app.post('/api/live/start', async (req, res) => {
             userId,
             userName: userName || 'User',
             userAvatar: '',
-            content: `🔴 LIVE NOW - ${userName || 'User'} is streaming!`,
+            content: '🔴 LIVE NOW - ' + (userName || 'User') + ' is streaming!',
             isLive: true,
             liveChannel: channel
         });
@@ -361,7 +361,6 @@ app.post('/api/live/join-request', async (req, res) => {
         const { fromUserId, toUserId } = req.body;
         const user = await User.findById(toUserId);
         if (!user) return res.status(404).json({ error: 'User not found' });
-        // Check if already requested
         if (user.liveJoinRequests && user.liveJoinRequests.some(r => r.fromUserId === fromUserId && r.status === 'pending')) {
             return res.status(400).json({ error: 'Request already sent' });
         }
