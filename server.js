@@ -28,8 +28,8 @@ const UserSchema = new mongoose.Schema({
     bannerPhoto: { type: String, default: '' },
     joined: { type: Date, default: Date.now },
     bio: { type: String, default: '' },
-    connections: { type: Array, default: [] }, // Users who have connected
-    connectionRequests: { type: Array, default: [] } // Pending requests
+    connections: { type: Array, default: [] },
+    connectionRequests: { type: Array, default: [] }
 });
 
 const PostSchema = new mongoose.Schema({
@@ -198,7 +198,6 @@ app.post('/api/verify', async (req, res) => {
 
 // ============ CONNECTION ENDPOINTS ============
 
-// Send connection request
 app.post('/api/connect/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
@@ -207,17 +206,14 @@ app.post('/api/connect/:userId', async (req, res) => {
         const targetUser = await User.findById(targetUserId);
         if (!targetUser) return res.status(404).json({ error: 'User not found' });
         
-        // Check if already connected
         if (targetUser.connections && targetUser.connections.includes(userId)) {
             return res.status(400).json({ error: 'Already connected' });
         }
         
-        // Check if request already sent
         if (targetUser.connectionRequests && targetUser.connectionRequests.includes(userId)) {
             return res.status(400).json({ error: 'Request already sent' });
         }
         
-        // Add request
         await User.findByIdAndUpdate(targetUserId, {
             $push: { connectionRequests: userId }
         });
@@ -228,18 +224,15 @@ app.post('/api/connect/:userId', async (req, res) => {
     }
 });
 
-// Accept connection request
 app.post('/api/connect/accept/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
         const { targetUserId } = req.body;
         
-        // Remove from requests
         await User.findByIdAndUpdate(targetUserId, {
             $pull: { connectionRequests: userId }
         });
         
-        // Add to both connections
         await User.findByIdAndUpdate(userId, {
             $push: { connections: targetUserId }
         });
@@ -253,7 +246,6 @@ app.post('/api/connect/accept/:userId', async (req, res) => {
     }
 });
 
-// Get connection requests
 app.get('/api/connect/requests/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
@@ -325,30 +317,6 @@ app.get('/api/posts', async (req, res) => {
     try {
         const posts = await Post.find().sort({ time: -1 });
         res.json(posts);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.get('/api/posts/:userId', async (req, res) => {
-    try {
-        const { userId } = req.params;
-        const { viewerId } = req.query;
-        
-        const posts = await Post.find({ userId }).sort({ time: -1 });
-        
-        // Check if viewer is connected
-        const viewer = await User.findById(viewerId);
-        const targetUser = await User.findById(userId);
-        
-        const isConnected = viewer && targetUser && 
-            viewer.connections && viewer.connections.includes(userId);
-        
-        // If not connected and not the owner, only show public posts
-        const filteredPosts = viewerId === userId || isConnected ? 
-            posts : posts.filter(p => p.isPublic !== false);
-        
-        res.json(filteredPosts);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -533,7 +501,6 @@ app.delete('/api/videos/:videoId', async (req, res) => {
 app.post('/api/live/start', async (req, res) => {
     try {
         const { userId, userName } = req.body;
-        // End any existing live stream for this user
         await LiveStream.updateMany({ userId, active: true }, { active: false });
         const stream = new LiveStream({ userId, userName, active: true });
         await stream.save();
@@ -553,7 +520,6 @@ app.post('/api/live/stop', async (req, res) => {
     }
 });
 
-// STOP ALL LIVES - Admin function to clear all active streams
 app.post('/api/live/stop-all', async (req, res) => {
     try {
         await LiveStream.updateMany({ active: true }, { active: false });
