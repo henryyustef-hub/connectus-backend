@@ -4,14 +4,13 @@ const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 
-// Try to load Agora, but don't fail if it's not installed
 let RtcTokenBuilder, RtcRole;
 try {
     const agora = require('agora-access-token');
     RtcTokenBuilder = agora.RtcTokenBuilder;
     RtcRole = agora.RtcRole;
 } catch (e) {
-    console.log('⚠️ Agora package not installed, video features will be disabled');
+    console.log('⚠️ Agora package not installed');
 }
 
 const app = express();
@@ -21,17 +20,11 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// MongoDB Connection with better error handling
+// MongoDB Connection
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/connectus';
-mongoose.connect(MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-})
-.then(() => console.log('✅ Connected to MongoDB'))
-.catch(err => {
-    console.error('❌ MongoDB connection error:', err.message);
-    console.log('⚠️ Continuing without database - some features will not work');
-});
+mongoose.connect(MONGODB_URI)
+    .then(() => console.log('✅ Connected to MongoDB'))
+    .catch(err => console.error('❌ MongoDB error:', err.message));
 
 // ============ SCHEMAS ============
 
@@ -103,46 +96,37 @@ const VideoSchema = new mongoose.Schema({
 const LiveStreamSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     userName: { type: String, required: true },
+    channel: { type: String, required: true },
     active: { type: Boolean, default: true },
     viewers: { type: Number, default: 0 },
     joinedUsers: { type: Array, default: [] },
     started: { type: Date, default: Date.now }
 });
 
-// Only create models if connection is successful
-let User, Post, ShopItem, Message, Photo, Video, LiveStream;
-try {
-    User = mongoose.model('User', UserSchema);
-    Post = mongoose.model('Post', PostSchema);
-    ShopItem = mongoose.model('ShopItem', ShopItemSchema);
-    Message = mongoose.model('Message', MessageSchema);
-    Photo = mongoose.model('Photo', PhotoSchema);
-    Video = mongoose.model('Video', VideoSchema);
-    LiveStream = mongoose.model('LiveStream', LiveStreamSchema);
-} catch (e) {
-    console.log('Models already defined or connection issue');
-}
+const User = mongoose.model('User', UserSchema);
+const Post = mongoose.model('Post', PostSchema);
+const ShopItem = mongoose.model('ShopItem', ShopItemSchema);
+const Message = mongoose.model('Message', MessageSchema);
+const Photo = mongoose.model('Photo', PhotoSchema);
+const Video = mongoose.model('Video', VideoSchema);
+const LiveStream = mongoose.model('LiveStream', LiveStreamSchema);
 
-// ============ AGORA TOKEN ENDPOINT ============
+// ============ AGORA TOKEN ============
 app.post('/api/agora-token', (req, res) => {
     try {
         if (!RtcTokenBuilder) {
-            return res.status(500).json({ error: 'Agora package not installed. Please run: npm install agora-access-token' });
+            return res.status(500).json({ error: 'Agora package not installed' });
         }
-        
         const { channelName, uid } = req.body;
         if (!channelName) {
             return res.status(400).json({ error: 'Channel name is required' });
         }
-
         const appId = process.env.AGORA_APP_ID || '789090c67c234f5c899e50836a34ad26';
         const appCertificate = process.env.AGORA_APP_CERTIFICATE || '6150ca8d815b4609b33b23bc56fe2749';
-
         const role = RtcRole.PUBLISHER;
         const expirationTimeInSeconds = 3600;
         const currentTimestamp = Math.floor(Date.now() / 1000);
         const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
-
         const token = RtcTokenBuilder.buildTokenWithUid(appId, appCertificate, channelName, uid || 0, role, privilegeExpiredTs);
         res.json({ token });
     } catch (error) {
@@ -151,11 +135,10 @@ app.post('/api/agora-token', (req, res) => {
     }
 });
 
-// ============ AUTH ENDPOINTS ============
+// ============ AUTH ============
 
 app.post('/api/register', async (req, res) => {
     try {
-        if (!User) throw new Error('Database not connected');
         const { name, email, password } = req.body;
         if (!name || !email || !password) {
             return res.status(400).json({ error: 'All fields required' });
@@ -194,13 +177,12 @@ app.post('/api/register', async (req, res) => {
         });
     } catch (error) {
         console.error('Register error:', error);
-        res.status(500).json({ error: 'Server error: ' + error.message });
+        res.status(500).json({ error: error.message });
     }
 });
 
 app.post('/api/login', async (req, res) => {
     try {
-        if (!User) throw new Error('Database not connected');
         const { email, password } = req.body;
         if (!email || !password) {
             return res.status(400).json({ error: 'Email and password required' });
@@ -232,13 +214,12 @@ app.post('/api/login', async (req, res) => {
         });
     } catch (error) {
         console.error('Login error:', error);
-        res.status(500).json({ error: 'Server error: ' + error.message });
+        res.status(500).json({ error: error.message });
     }
 });
 
 app.post('/api/verify', async (req, res) => {
     try {
-        if (!User) throw new Error('Database not connected');
         const { token } = req.body;
         if (!token) return res.status(401).json({ error: 'No token' });
         const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret_key');
@@ -264,314 +245,182 @@ app.post('/api/verify', async (req, res) => {
     }
 });
 
-// ============ SIMPLE TEST ENDPOINT ============
-app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', message: 'Server is running' });
-});
+// ============ LIVE STREAM ENDPOINTS (FIXED) ============
 
-// ============ OTHER ENDPOINTS (Basic) ============
-
-app.get('/api/users/:userId', async (req, res) => {
-    try {
-        if (!User) throw new Error('Database not connected');
-        const userId = req.params.userId;
-        const users = await User.find({ _id: { $ne: userId } }, { password: 0 });
-        res.json(users);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.get('/api/user/:userId', async (req, res) => {
-    try {
-        if (!User) throw new Error('Database not connected');
-        const userId = req.params.userId;
-        const user = await User.findById(userId, { password: 0 });
-        if (!user) return res.status(404).json({ error: 'User not found' });
-        res.json(user);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.put('/api/user/:userId', async (req, res) => {
-    try {
-        if (!User) throw new Error('Database not connected');
-        const userId = req.params.userId;
-        const { bio, profilePhoto, bannerPhoto } = req.body;
-        const updateData = {};
-        if (bio !== undefined) updateData.bio = bio;
-        if (profilePhoto !== undefined) updateData.profilePhoto = profilePhoto;
-        if (bannerPhoto !== undefined) updateData.bannerPhoto = bannerPhoto;
-        const user = await User.findByIdAndUpdate(userId, updateData, { new: true }).select('-password');
-        res.json(user);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/posts', async (req, res) => {
-    try {
-        if (!Post) throw new Error('Database not connected');
-        const { userId, userName, userAvatar, content, image, video, isPublic, isLive, liveChannel } = req.body;
-        const post = new Post({ userId, userName, userAvatar, content, image, video, isPublic: isPublic !== false, isLive: isLive || false, liveChannel: liveChannel || '' });
-        await post.save();
-        res.json(post);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.get('/api/posts', async (req, res) => {
-    try {
-        if (!Post) throw new Error('Database not connected');
-        const posts = await Post.find().sort({ time: -1 });
-        res.json(posts);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.put('/api/posts/:postId/like', async (req, res) => {
-    try {
-        if (!Post) throw new Error('Database not connected');
-        const post = await Post.findById(req.params.postId);
-        if (!post) return res.status(404).json({ error: 'Post not found' });
-        post.likes += 1;
-        await post.save();
-        res.json({ likes: post.likes });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.delete('/api/posts/:postId', async (req, res) => {
-    try {
-        if (!Post) throw new Error('Database not connected');
-        const post = await Post.findById(req.params.postId);
-        if (!post) return res.status(404).json({ error: 'Post not found' });
-        await Post.deleteOne({ _id: req.params.postId });
-        res.json({ success: true, message: 'Post deleted successfully' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/shop', async (req, res) => {
-    try {
-        if (!ShopItem) throw new Error('Database not connected');
-        const item = new ShopItem(req.body);
-        await item.save();
-        res.json(item);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.get('/api/shop', async (req, res) => {
-    try {
-        if (!ShopItem) throw new Error('Database not connected');
-        const items = await ShopItem.find().sort({ createdAt: -1 });
-        res.json(items);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.delete('/api/shop/:itemId', async (req, res) => {
-    try {
-        if (!ShopItem) throw new Error('Database not connected');
-        const item = await ShopItem.findById(req.params.itemId);
-        if (!item) return res.status(404).json({ error: 'Item not found' });
-        await ShopItem.deleteOne({ _id: req.params.itemId });
-        res.json({ success: true, message: 'Item deleted successfully' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/messages', async (req, res) => {
-    try {
-        if (!Message) throw new Error('Database not connected');
-        const message = new Message(req.body);
-        await message.save();
-        res.json(message);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.get('/api/messages/:userId/:otherId', async (req, res) => {
-    try {
-        if (!Message) throw new Error('Database not connected');
-        const userId = req.params.userId;
-        const otherId = req.params.otherId;
-        const messages = await Message.find({
-            $or: [
-                { from: userId, to: otherId },
-                { from: otherId, to: userId }
-            ]
-        }).sort({ time: 1 });
-        res.json(messages);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.get('/api/messages/:userId/all', async (req, res) => {
-    try {
-        if (!Message) throw new Error('Database not connected');
-        const userId = req.params.userId;
-        const messages = await Message.find({
-            $or: [
-                { from: userId },
-                { to: userId }
-            ]
-        }).sort({ time: -1 });
-        res.json(messages);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/photos', async (req, res) => {
-    try {
-        if (!Photo) throw new Error('Database not connected');
-        const photo = new Photo(req.body);
-        await photo.save();
-        res.json(photo);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.get('/api/photos', async (req, res) => {
-    try {
-        if (!Photo) throw new Error('Database not connected');
-        const photos = await Photo.find().sort({ time: -1 });
-        res.json(photos);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.delete('/api/photos/:photoId', async (req, res) => {
-    try {
-        if (!Photo) throw new Error('Database not connected');
-        const photo = await Photo.findById(req.params.photoId);
-        if (!photo) return res.status(404).json({ error: 'Photo not found' });
-        await Photo.deleteOne({ _id: req.params.photoId });
-        res.json({ success: true, message: 'Photo deleted successfully' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/videos', async (req, res) => {
-    try {
-        if (!Video) throw new Error('Database not connected');
-        const video = new Video(req.body);
-        await video.save();
-        res.json(video);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.get('/api/videos', async (req, res) => {
-    try {
-        if (!Video) throw new Error('Database not connected');
-        const videos = await Video.find().sort({ time: -1 });
-        res.json(videos);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.delete('/api/videos/:videoId', async (req, res) => {
-    try {
-        if (!Video) throw new Error('Database not connected');
-        const video = await Video.findById(req.params.videoId);
-        if (!video) return res.status(404).json({ error: 'Video not found' });
-        await Video.deleteOne({ _id: req.params.videoId });
-        res.json({ success: true, message: 'Video deleted successfully' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
+// Start a live stream
 app.post('/api/live/start', async (req, res) => {
     try {
-        if (!LiveStream) throw new Error('Database not connected');
-        const { userId, userName } = req.body;
+        const { userId, userName, channel } = req.body;
+        if (!userId || !channel) {
+            return res.status(400).json({ error: 'userId and channel required' });
+        }
+        // End any existing live streams for this user
         await LiveStream.updateMany({ userId, active: true }, { active: false });
-        const stream = new LiveStream({ userId, userName, active: true });
+        // Create new live stream
+        const stream = new LiveStream({
+            userId,
+            userName: userName || 'User',
+            channel,
+            active: true,
+            viewers: 0,
+            joinedUsers: []
+        });
         await stream.save();
-        res.json({ success: true, stream });
+        // Also create a post for this live
+        const post = new Post({
+            userId,
+            userName: userName || 'User',
+            userAvatar: '',
+            content: `🔴 LIVE NOW - ${userName || 'User'} is streaming!`,
+            isLive: true,
+            liveChannel: channel
+        });
+        await post.save();
+        res.json({ success: true, stream, post });
     } catch (error) {
+        console.error('Start live error:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
+// Stop a live stream
 app.post('/api/live/stop', async (req, res) => {
     try {
-        if (!LiveStream) throw new Error('Database not connected');
         const { userId } = req.body;
+        if (!userId) {
+            return res.status(400).json({ error: 'userId required' });
+        }
         await LiveStream.updateOne({ userId, active: true }, { active: false });
-        res.json({ success: true });
+        // Also mark posts as not live
+        await Post.updateMany({ userId, isLive: true }, { isLive: false });
+        res.json({ success: true, message: 'Live stream stopped' });
     } catch (error) {
+        console.error('Stop live error:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
+// Stop all lives (admin)
 app.post('/api/live/stop-all', async (req, res) => {
     try {
-        if (!LiveStream) throw new Error('Database not connected');
         await LiveStream.updateMany({ active: true }, { active: false });
+        await Post.updateMany({ isLive: true }, { isLive: false });
         res.json({ success: true, message: 'All live streams stopped' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
+// Get all active live streams
 app.get('/api/live/active', async (req, res) => {
     try {
-        if (!LiveStream) throw new Error('Database not connected');
         const streams = await LiveStream.find({ active: true });
         res.json(streams);
     } catch (error) {
+        console.error('Get active lives error:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
+// Get a specific live stream
 app.get('/api/live/:userId', async (req, res) => {
     try {
-        if (!LiveStream) throw new Error('Database not connected');
-        const stream = await LiveStream.findOne({ userId: req.params.userId, active: true });
-        res.json(stream || null);
+        const stream = await LiveStream.findOne({ 
+            userId: req.params.userId, 
+            active: true 
+        });
+        if (!stream) {
+            return res.status(404).json({ error: 'No active live stream found' });
+        }
+        res.json(stream);
+    } catch (error) {
+        console.error('Get live error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Update viewers count
+app.put('/api/live/:userId/viewers', async (req, res) => {
+    try {
+        const { count } = req.body;
+        const stream = await LiveStream.findOneAndUpdate(
+            { userId: req.params.userId, active: true },
+            { viewers: count },
+            { new: true }
+        );
+        res.json({ success: true, stream });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-app.put('/api/live/:userId/viewers', async (req, res) => {
+// ============ LIVE JOIN REQUESTS ============
+
+app.post('/api/live/join-request', async (req, res) => {
     try {
-        if (!LiveStream) throw new Error('Database not connected');
-        const { count } = req.body;
-        const stream = await LiveStream.findOne({ userId: req.params.userId, active: true });
-        if (stream) {
-            stream.viewers = count;
-            await stream.save();
+        const { fromUserId, toUserId } = req.body;
+        const user = await User.findById(toUserId);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        // Check if already requested
+        if (user.liveJoinRequests && user.liveJoinRequests.some(r => r.fromUserId === fromUserId && r.status === 'pending')) {
+            return res.status(400).json({ error: 'Request already sent' });
         }
-        res.json({ success: true });
+        await User.findByIdAndUpdate(toUserId, {
+            $push: { liveJoinRequests: { fromUserId, status: 'pending' } }
+        });
+        res.json({ success: true, message: 'Join request sent' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
+
+app.post('/api/live/join-accept', async (req, res) => {
+    try {
+        const { hostUserId, requesterUserId } = req.body;
+        await User.findByIdAndUpdate(hostUserId, {
+            $pull: { liveJoinRequests: { fromUserId: requesterUserId } }
+        });
+        await LiveStream.updateOne(
+            { userId: hostUserId, active: true },
+            { $addToSet: { joinedUsers: requesterUserId } }
+        );
+        res.json({ success: true, message: 'Join request accepted' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/live/join-decline', async (req, res) => {
+    try {
+        const { hostUserId, requesterUserId } = req.body;
+        await User.findByIdAndUpdate(hostUserId, {
+            $pull: { liveJoinRequests: { fromUserId: requesterUserId } }
+        });
+        res.json({ success: true, message: 'Join request declined' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/live/join-requests/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const user = await User.findById(userId);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        const pendingRequests = user.liveJoinRequests?.filter(r => r.status === 'pending') || [];
+        const requesters = await User.find({
+            _id: { $in: pendingRequests.map(r => r.fromUserId) }
+        }).select('-password');
+        res.json(requesters);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============ CONNECTION REQUESTS ============
 
 app.post('/api/connect/:userId', async (req, res) => {
     try {
-        if (!User) throw new Error('Database not connected');
         const { userId } = req.params;
         const { targetUserId } = req.body;
         const targetUser = await User.findById(targetUserId);
@@ -593,7 +442,6 @@ app.post('/api/connect/:userId', async (req, res) => {
 
 app.post('/api/connect/accept/:userId', async (req, res) => {
     try {
-        if (!User) throw new Error('Database not connected');
         const { userId } = req.params;
         const { targetUserId } = req.body;
         await User.findByIdAndUpdate(targetUserId, {
@@ -613,7 +461,6 @@ app.post('/api/connect/accept/:userId', async (req, res) => {
 
 app.post('/api/connect/decline/:userId', async (req, res) => {
     try {
-        if (!User) throw new Error('Database not connected');
         const { userId } = req.params;
         const { targetUserId } = req.body;
         await User.findByIdAndUpdate(targetUserId, {
@@ -627,7 +474,6 @@ app.post('/api/connect/decline/:userId', async (req, res) => {
 
 app.post('/api/connect/disconnect/:userId', async (req, res) => {
     try {
-        if (!User) throw new Error('Database not connected');
         const { userId } = req.params;
         const { targetUserId } = req.body;
         await User.findByIdAndUpdate(userId, {
@@ -644,7 +490,6 @@ app.post('/api/connect/disconnect/:userId', async (req, res) => {
 
 app.get('/api/connect/requests/:userId', async (req, res) => {
     try {
-        if (!User) throw new Error('Database not connected');
         const { userId } = req.params;
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ error: 'User not found' });
@@ -657,72 +502,244 @@ app.get('/api/connect/requests/:userId', async (req, res) => {
     }
 });
 
-app.post('/api/live/join-request', async (req, res) => {
+// ============ USER ENDPOINTS ============
+
+app.get('/api/users/:userId', async (req, res) => {
     try {
-        if (!User) throw new Error('Database not connected');
-        const { fromUserId, toUserId } = req.body;
-        const user = await User.findById(toUserId);
+        const userId = req.params.userId;
+        const users = await User.find({ _id: { $ne: userId } }, { password: 0 });
+        res.json(users);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/user/:userId', async (req, res) => {
+    try {
+        const userId = req.params.userId;
+        const user = await User.findById(userId, { password: 0 });
         if (!user) return res.status(404).json({ error: 'User not found' });
-        if (user.liveJoinRequests && user.liveJoinRequests.some(r => r.fromUserId === fromUserId && r.status === 'pending')) {
-            return res.status(400).json({ error: 'Request already sent' });
-        }
-        await User.findByIdAndUpdate(toUserId, {
-            $push: { liveJoinRequests: { fromUserId, status: 'pending' } }
-        });
-        res.json({ success: true, message: 'Join request sent' });
+        res.json(user);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-app.post('/api/live/join-accept', async (req, res) => {
+app.put('/api/user/:userId', async (req, res) => {
     try {
-        if (!User || !LiveStream) throw new Error('Database not connected');
-        const { hostUserId, requesterUserId } = req.body;
-        await User.findByIdAndUpdate(hostUserId, {
-            $pull: { liveJoinRequests: { fromUserId: requesterUserId } }
-        });
-        await LiveStream.updateOne(
-            { userId: hostUserId, active: true },
-            { $addToSet: { joinedUsers: requesterUserId } }
-        );
-        res.json({ success: true, message: 'Join request accepted' });
+        const userId = req.params.userId;
+        const { bio, profilePhoto, bannerPhoto } = req.body;
+        const updateData = {};
+        if (bio !== undefined) updateData.bio = bio;
+        if (profilePhoto !== undefined) updateData.profilePhoto = profilePhoto;
+        if (bannerPhoto !== undefined) updateData.bannerPhoto = bannerPhoto;
+        const user = await User.findByIdAndUpdate(userId, updateData, { new: true }).select('-password');
+        res.json(user);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-app.post('/api/live/join-decline', async (req, res) => {
+// ============ POST ENDPOINTS ============
+
+app.post('/api/posts', async (req, res) => {
     try {
-        if (!User) throw new Error('Database not connected');
-        const { hostUserId, requesterUserId } = req.body;
-        await User.findByIdAndUpdate(hostUserId, {
-            $pull: { liveJoinRequests: { fromUserId: requesterUserId } }
+        const { userId, userName, userAvatar, content, image, video, isPublic, isLive, liveChannel } = req.body;
+        const post = new Post({ 
+            userId, 
+            userName, 
+            userAvatar, 
+            content, 
+            image, 
+            video, 
+            isPublic: isPublic !== false, 
+            isLive: isLive || false, 
+            liveChannel: liveChannel || '' 
         });
-        res.json({ success: true, message: 'Join request declined' });
+        await post.save();
+        res.json(post);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-app.get('/api/live/join-requests/:userId', async (req, res) => {
+app.get('/api/posts', async (req, res) => {
     try {
-        if (!User) throw new Error('Database not connected');
-        const { userId } = req.params;
-        const user = await User.findById(userId);
-        if (!user) return res.status(404).json({ error: 'User not found' });
-        const pendingRequests = user.liveJoinRequests?.filter(r => r.status === 'pending') || [];
-        const requesters = await User.find({
-            _id: { $in: pendingRequests.map(r => r.fromUserId) }
-        }).select('-password');
-        res.json(requesters);
+        const posts = await Post.find().sort({ time: -1 });
+        res.json(posts);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
+});
+
+app.put('/api/posts/:postId/like', async (req, res) => {
+    try {
+        const post = await Post.findById(req.params.postId);
+        if (!post) return res.status(404).json({ error: 'Post not found' });
+        post.likes += 1;
+        await post.save();
+        res.json({ likes: post.likes });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/posts/:postId', async (req, res) => {
+    try {
+        const post = await Post.findById(req.params.postId);
+        if (!post) return res.status(404).json({ error: 'Post not found' });
+        await Post.deleteOne({ _id: req.params.postId });
+        res.json({ success: true, message: 'Post deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============ SHOP ENDPOINTS ============
+
+app.post('/api/shop', async (req, res) => {
+    try {
+        const item = new ShopItem(req.body);
+        await item.save();
+        res.json(item);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/shop', async (req, res) => {
+    try {
+        const items = await ShopItem.find().sort({ createdAt: -1 });
+        res.json(items);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/shop/:itemId', async (req, res) => {
+    try {
+        const item = await ShopItem.findById(req.params.itemId);
+        if (!item) return res.status(404).json({ error: 'Item not found' });
+        await ShopItem.deleteOne({ _id: req.params.itemId });
+        res.json({ success: true, message: 'Item deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============ MESSAGE ENDPOINTS ============
+
+app.post('/api/messages', async (req, res) => {
+    try {
+        const message = new Message(req.body);
+        await message.save();
+        res.json(message);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/messages/:userId/:otherId', async (req, res) => {
+    try {
+        const userId = req.params.userId;
+        const otherId = req.params.otherId;
+        const messages = await Message.find({
+            $or: [
+                { from: userId, to: otherId },
+                { from: otherId, to: userId }
+            ]
+        }).sort({ time: 1 });
+        res.json(messages);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/messages/:userId/all', async (req, res) => {
+    try {
+        const userId = req.params.userId;
+        const messages = await Message.find({
+            $or: [
+                { from: userId },
+                { to: userId }
+            ]
+        }).sort({ time: -1 });
+        res.json(messages);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============ PHOTO ENDPOINTS ============
+
+app.post('/api/photos', async (req, res) => {
+    try {
+        const photo = new Photo(req.body);
+        await photo.save();
+        res.json(photo);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/photos', async (req, res) => {
+    try {
+        const photos = await Photo.find().sort({ time: -1 });
+        res.json(photos);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/photos/:photoId', async (req, res) => {
+    try {
+        const photo = await Photo.findById(req.params.photoId);
+        if (!photo) return res.status(404).json({ error: 'Photo not found' });
+        await Photo.deleteOne({ _id: req.params.photoId });
+        res.json({ success: true, message: 'Photo deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============ VIDEO ENDPOINTS ============
+
+app.post('/api/videos', async (req, res) => {
+    try {
+        const video = new Video(req.body);
+        await video.save();
+        res.json(video);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/videos', async (req, res) => {
+    try {
+        const videos = await Video.find().sort({ time: -1 });
+        res.json(videos);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/videos/:videoId', async (req, res) => {
+    try {
+        const video = await Video.findById(req.params.videoId);
+        if (!video) return res.status(404).json({ error: 'Video not found' });
+        await Video.deleteOne({ _id: req.params.videoId });
+        res.json({ success: true, message: 'Video deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============ HEALTH CHECK ============
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', message: 'Server is running' });
 });
 
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📍 Health check: http://localhost:${PORT}/api/health`);
-    console.log(`📍 Agora token: POST http://localhost:${PORT}/api/agora-token`);
 });
