@@ -3,8 +3,16 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const { RtcTokenBuilder, RtcRole } = require('agora-access-token');
-require('dotenv').config();
+
+// Try to load Agora, but don't fail if it's not installed
+let RtcTokenBuilder, RtcRole;
+try {
+    const agora = require('agora-access-token');
+    RtcTokenBuilder = agora.RtcTokenBuilder;
+    RtcRole = agora.RtcRole;
+} catch (e) {
+    console.log('⚠️ Agora package not installed, video features will be disabled');
+}
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -13,10 +21,17 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// MongoDB Connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/connectus')
-    .then(() => console.log('✅ Connected to MongoDB'))
-    .catch(err => console.error('❌ MongoDB error:', err));
+// MongoDB Connection with better error handling
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/connectus';
+mongoose.connect(MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+})
+.then(() => console.log('✅ Connected to MongoDB'))
+.catch(err => {
+    console.error('❌ MongoDB connection error:', err.message);
+    console.log('⚠️ Continuing without database - some features will not work');
+});
 
 // ============ SCHEMAS ============
 
@@ -94,18 +109,53 @@ const LiveStreamSchema = new mongoose.Schema({
     started: { type: Date, default: Date.now }
 });
 
-const User = mongoose.model('User', UserSchema);
-const Post = mongoose.model('Post', PostSchema);
-const ShopItem = mongoose.model('ShopItem', ShopItemSchema);
-const Message = mongoose.model('Message', MessageSchema);
-const Photo = mongoose.model('Photo', PhotoSchema);
-const Video = mongoose.model('Video', VideoSchema);
-const LiveStream = mongoose.model('LiveStream', LiveStreamSchema);
+// Only create models if connection is successful
+let User, Post, ShopItem, Message, Photo, Video, LiveStream;
+try {
+    User = mongoose.model('User', UserSchema);
+    Post = mongoose.model('Post', PostSchema);
+    ShopItem = mongoose.model('ShopItem', ShopItemSchema);
+    Message = mongoose.model('Message', MessageSchema);
+    Photo = mongoose.model('Photo', PhotoSchema);
+    Video = mongoose.model('Video', VideoSchema);
+    LiveStream = mongoose.model('LiveStream', LiveStreamSchema);
+} catch (e) {
+    console.log('Models already defined or connection issue');
+}
+
+// ============ AGORA TOKEN ENDPOINT ============
+app.post('/api/agora-token', (req, res) => {
+    try {
+        if (!RtcTokenBuilder) {
+            return res.status(500).json({ error: 'Agora package not installed. Please run: npm install agora-access-token' });
+        }
+        
+        const { channelName, uid } = req.body;
+        if (!channelName) {
+            return res.status(400).json({ error: 'Channel name is required' });
+        }
+
+        const appId = process.env.AGORA_APP_ID || '789090c67c234f5c899e50836a34ad26';
+        const appCertificate = process.env.AGORA_APP_CERTIFICATE || '6150ca8d815b4609b33b23bc56fe2749';
+
+        const role = RtcRole.PUBLISHER;
+        const expirationTimeInSeconds = 3600;
+        const currentTimestamp = Math.floor(Date.now() / 1000);
+        const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
+
+        const token = RtcTokenBuilder.buildTokenWithUid(appId, appCertificate, channelName, uid || 0, role, privilegeExpiredTs);
+        res.json({ token });
+    } catch (error) {
+        console.error('Error generating Agora token:', error);
+        res.status(500).json({ error: 'Failed to generate Agora token: ' + error.message });
+    }
+});
 
 // ============ AUTH ENDPOINTS ============
 
 app.post('/api/register', async (req, res) => {
     try {
+        if (!User) throw new Error('Database not connected');
         const { name, email, password } = req.body;
         if (!name || !email || !password) {
             return res.status(400).json({ error: 'All fields required' });
@@ -143,13 +193,18 @@ app.post('/api/register', async (req, res) => {
             token
         });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('Register error:', error);
+        res.status(500).json({ error: 'Server error: ' + error.message });
     }
 });
 
 app.post('/api/login', async (req, res) => {
     try {
+        if (!User) throw new Error('Database not connected');
         const { email, password } = req.body;
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email and password required' });
+        }
         const user = await User.findOne({ email });
         if (!user) {
             return res.status(400).json({ error: 'User not found' });
@@ -176,12 +231,14 @@ app.post('/api/login', async (req, res) => {
             token
         });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('Login error:', error);
+        res.status(500).json({ error: 'Server error: ' + error.message });
     }
 });
 
 app.post('/api/verify', async (req, res) => {
     try {
+        if (!User) throw new Error('Database not connected');
         const { token } = req.body;
         if (!token) return res.status(401).json({ error: 'No token' });
         const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret_key');
@@ -202,138 +259,21 @@ app.post('/api/verify', async (req, res) => {
             }
         });
     } catch (error) {
+        console.error('Verify error:', error);
         res.status(401).json({ error: 'Invalid token' });
     }
 });
 
-// ============ AGORA TOKEN ENDPOINT ============
-app.post('/api/agora-token', (req, res) => {
-    try {
-        const { channelName, uid } = req.body;
-        if (!channelName) {
-            return res.status(400).json({ error: 'Channel name is required' });
-        }
-
-        // YOUR AGORA CREDENTIALS - Already configured!
-        const appId = '789090c67c234f5c899e50836a34ad26';
-        const appCertificate = '6150ca8d815b4609b33b23bc56fe2749';
-
-        const role = RtcRole.PUBLISHER;
-        const expirationTimeInSeconds = 3600;
-        const currentTimestamp = Math.floor(Date.now() / 1000);
-        const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
-
-        const token = RtcTokenBuilder.buildTokenWithUid(appId, appCertificate, channelName, uid || 0, role, privilegeExpiredTs);
-        res.json({ token });
-    } catch (error) {
-        console.error('Error generating Agora token:', error);
-        res.status(500).json({ error: 'Failed to generate Agora token: ' + error.message });
-    }
+// ============ SIMPLE TEST ENDPOINT ============
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', message: 'Server is running' });
 });
 
-// ============ CONNECTION ENDPOINTS ============
-
-app.post('/api/connect/:userId', async (req, res) => {
-    try {
-        const { userId } = req.params;
-        const { targetUserId } = req.body;
-
-        const targetUser = await User.findById(targetUserId);
-        if (!targetUser) return res.status(404).json({ error: 'User not found' });
-
-        if (targetUser.connections && targetUser.connections.includes(userId)) {
-            return res.status(400).json({ error: 'Already connected' });
-        }
-
-        if (targetUser.connectionRequests && targetUser.connectionRequests.includes(userId)) {
-            return res.status(400).json({ error: 'Request already sent' });
-        }
-
-        await User.findByIdAndUpdate(targetUserId, {
-            $push: { connectionRequests: userId }
-        });
-
-        res.json({ success: true, message: 'Connection request sent' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/connect/accept/:userId', async (req, res) => {
-    try {
-        const { userId } = req.params;
-        const { targetUserId } = req.body;
-
-        await User.findByIdAndUpdate(targetUserId, {
-            $pull: { connectionRequests: userId }
-        });
-
-        await User.findByIdAndUpdate(userId, {
-            $push: { connections: targetUserId }
-        });
-        await User.findByIdAndUpdate(targetUserId, {
-            $push: { connections: userId }
-        });
-
-        res.json({ success: true, message: 'Connection accepted' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/connect/decline/:userId', async (req, res) => {
-    try {
-        const { userId } = req.params;
-        const { targetUserId } = req.body;
-
-        await User.findByIdAndUpdate(targetUserId, {
-            $pull: { connectionRequests: userId }
-        });
-
-        res.json({ success: true, message: 'Connection declined' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/connect/disconnect/:userId', async (req, res) => {
-    try {
-        const { userId } = req.params;
-        const { targetUserId } = req.body;
-
-        await User.findByIdAndUpdate(userId, {
-            $pull: { connections: targetUserId }
-        });
-        await User.findByIdAndUpdate(targetUserId, {
-            $pull: { connections: userId }
-        });
-
-        res.json({ success: true, message: 'Disconnected' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.get('/api/connect/requests/:userId', async (req, res) => {
-    try {
-        const { userId } = req.params;
-        const user = await User.findById(userId);
-        if (!user) return res.status(404).json({ error: 'User not found' });
-
-        const requests = await User.find({
-            _id: { $in: user.connectionRequests || [] }
-        }).select('-password');
-
-        res.json(requests);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ============ USER ENDPOINTS ============
+// ============ OTHER ENDPOINTS (Basic) ============
 
 app.get('/api/users/:userId', async (req, res) => {
     try {
+        if (!User) throw new Error('Database not connected');
         const userId = req.params.userId;
         const users = await User.find({ _id: { $ne: userId } }, { password: 0 });
         res.json(users);
@@ -344,6 +284,7 @@ app.get('/api/users/:userId', async (req, res) => {
 
 app.get('/api/user/:userId', async (req, res) => {
     try {
+        if (!User) throw new Error('Database not connected');
         const userId = req.params.userId;
         const user = await User.findById(userId, { password: 0 });
         if (!user) return res.status(404).json({ error: 'User not found' });
@@ -355,6 +296,7 @@ app.get('/api/user/:userId', async (req, res) => {
 
 app.put('/api/user/:userId', async (req, res) => {
     try {
+        if (!User) throw new Error('Database not connected');
         const userId = req.params.userId;
         const { bio, profilePhoto, bannerPhoto } = req.body;
         const updateData = {};
@@ -368,10 +310,9 @@ app.put('/api/user/:userId', async (req, res) => {
     }
 });
 
-// ============ POST ENDPOINTS ============
-
 app.post('/api/posts', async (req, res) => {
     try {
+        if (!Post) throw new Error('Database not connected');
         const { userId, userName, userAvatar, content, image, video, isPublic, isLive, liveChannel } = req.body;
         const post = new Post({ userId, userName, userAvatar, content, image, video, isPublic: isPublic !== false, isLive: isLive || false, liveChannel: liveChannel || '' });
         await post.save();
@@ -383,6 +324,7 @@ app.post('/api/posts', async (req, res) => {
 
 app.get('/api/posts', async (req, res) => {
     try {
+        if (!Post) throw new Error('Database not connected');
         const posts = await Post.find().sort({ time: -1 });
         res.json(posts);
     } catch (error) {
@@ -392,6 +334,7 @@ app.get('/api/posts', async (req, res) => {
 
 app.put('/api/posts/:postId/like', async (req, res) => {
     try {
+        if (!Post) throw new Error('Database not connected');
         const post = await Post.findById(req.params.postId);
         if (!post) return res.status(404).json({ error: 'Post not found' });
         post.likes += 1;
@@ -404,6 +347,7 @@ app.put('/api/posts/:postId/like', async (req, res) => {
 
 app.delete('/api/posts/:postId', async (req, res) => {
     try {
+        if (!Post) throw new Error('Database not connected');
         const post = await Post.findById(req.params.postId);
         if (!post) return res.status(404).json({ error: 'Post not found' });
         await Post.deleteOne({ _id: req.params.postId });
@@ -413,10 +357,9 @@ app.delete('/api/posts/:postId', async (req, res) => {
     }
 });
 
-// ============ SHOP ENDPOINTS ============
-
 app.post('/api/shop', async (req, res) => {
     try {
+        if (!ShopItem) throw new Error('Database not connected');
         const item = new ShopItem(req.body);
         await item.save();
         res.json(item);
@@ -427,6 +370,7 @@ app.post('/api/shop', async (req, res) => {
 
 app.get('/api/shop', async (req, res) => {
     try {
+        if (!ShopItem) throw new Error('Database not connected');
         const items = await ShopItem.find().sort({ createdAt: -1 });
         res.json(items);
     } catch (error) {
@@ -434,20 +378,9 @@ app.get('/api/shop', async (req, res) => {
     }
 });
 
-app.put('/api/shop/:itemId/share', async (req, res) => {
-    try {
-        const item = await ShopItem.findById(req.params.itemId);
-        if (!item) return res.status(404).json({ error: 'Item not found' });
-        item.shares += 1;
-        await item.save();
-        res.json({ shares: item.shares });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
 app.delete('/api/shop/:itemId', async (req, res) => {
     try {
+        if (!ShopItem) throw new Error('Database not connected');
         const item = await ShopItem.findById(req.params.itemId);
         if (!item) return res.status(404).json({ error: 'Item not found' });
         await ShopItem.deleteOne({ _id: req.params.itemId });
@@ -457,10 +390,9 @@ app.delete('/api/shop/:itemId', async (req, res) => {
     }
 });
 
-// ============ MESSAGE ENDPOINTS ============
-
 app.post('/api/messages', async (req, res) => {
     try {
+        if (!Message) throw new Error('Database not connected');
         const message = new Message(req.body);
         await message.save();
         res.json(message);
@@ -471,6 +403,7 @@ app.post('/api/messages', async (req, res) => {
 
 app.get('/api/messages/:userId/:otherId', async (req, res) => {
     try {
+        if (!Message) throw new Error('Database not connected');
         const userId = req.params.userId;
         const otherId = req.params.otherId;
         const messages = await Message.find({
@@ -487,6 +420,7 @@ app.get('/api/messages/:userId/:otherId', async (req, res) => {
 
 app.get('/api/messages/:userId/all', async (req, res) => {
     try {
+        if (!Message) throw new Error('Database not connected');
         const userId = req.params.userId;
         const messages = await Message.find({
             $or: [
@@ -500,10 +434,9 @@ app.get('/api/messages/:userId/all', async (req, res) => {
     }
 });
 
-// ============ PHOTO ENDPOINTS ============
-
 app.post('/api/photos', async (req, res) => {
     try {
+        if (!Photo) throw new Error('Database not connected');
         const photo = new Photo(req.body);
         await photo.save();
         res.json(photo);
@@ -514,6 +447,7 @@ app.post('/api/photos', async (req, res) => {
 
 app.get('/api/photos', async (req, res) => {
     try {
+        if (!Photo) throw new Error('Database not connected');
         const photos = await Photo.find().sort({ time: -1 });
         res.json(photos);
     } catch (error) {
@@ -523,6 +457,7 @@ app.get('/api/photos', async (req, res) => {
 
 app.delete('/api/photos/:photoId', async (req, res) => {
     try {
+        if (!Photo) throw new Error('Database not connected');
         const photo = await Photo.findById(req.params.photoId);
         if (!photo) return res.status(404).json({ error: 'Photo not found' });
         await Photo.deleteOne({ _id: req.params.photoId });
@@ -532,10 +467,9 @@ app.delete('/api/photos/:photoId', async (req, res) => {
     }
 });
 
-// ============ VIDEO ENDPOINTS ============
-
 app.post('/api/videos', async (req, res) => {
     try {
+        if (!Video) throw new Error('Database not connected');
         const video = new Video(req.body);
         await video.save();
         res.json(video);
@@ -546,6 +480,7 @@ app.post('/api/videos', async (req, res) => {
 
 app.get('/api/videos', async (req, res) => {
     try {
+        if (!Video) throw new Error('Database not connected');
         const videos = await Video.find().sort({ time: -1 });
         res.json(videos);
     } catch (error) {
@@ -555,6 +490,7 @@ app.get('/api/videos', async (req, res) => {
 
 app.delete('/api/videos/:videoId', async (req, res) => {
     try {
+        if (!Video) throw new Error('Database not connected');
         const video = await Video.findById(req.params.videoId);
         if (!video) return res.status(404).json({ error: 'Video not found' });
         await Video.deleteOne({ _id: req.params.videoId });
@@ -564,10 +500,9 @@ app.delete('/api/videos/:videoId', async (req, res) => {
     }
 });
 
-// ============ LIVE STREAM ENDPOINTS ============
-
 app.post('/api/live/start', async (req, res) => {
     try {
+        if (!LiveStream) throw new Error('Database not connected');
         const { userId, userName } = req.body;
         await LiveStream.updateMany({ userId, active: true }, { active: false });
         const stream = new LiveStream({ userId, userName, active: true });
@@ -580,6 +515,7 @@ app.post('/api/live/start', async (req, res) => {
 
 app.post('/api/live/stop', async (req, res) => {
     try {
+        if (!LiveStream) throw new Error('Database not connected');
         const { userId } = req.body;
         await LiveStream.updateOne({ userId, active: true }, { active: false });
         res.json({ success: true });
@@ -590,6 +526,7 @@ app.post('/api/live/stop', async (req, res) => {
 
 app.post('/api/live/stop-all', async (req, res) => {
     try {
+        if (!LiveStream) throw new Error('Database not connected');
         await LiveStream.updateMany({ active: true }, { active: false });
         res.json({ success: true, message: 'All live streams stopped' });
     } catch (error) {
@@ -599,6 +536,7 @@ app.post('/api/live/stop-all', async (req, res) => {
 
 app.get('/api/live/active', async (req, res) => {
     try {
+        if (!LiveStream) throw new Error('Database not connected');
         const streams = await LiveStream.find({ active: true });
         res.json(streams);
     } catch (error) {
@@ -608,6 +546,7 @@ app.get('/api/live/active', async (req, res) => {
 
 app.get('/api/live/:userId', async (req, res) => {
     try {
+        if (!LiveStream) throw new Error('Database not connected');
         const stream = await LiveStream.findOne({ userId: req.params.userId, active: true });
         res.json(stream || null);
     } catch (error) {
@@ -617,6 +556,7 @@ app.get('/api/live/:userId', async (req, res) => {
 
 app.put('/api/live/:userId/viewers', async (req, res) => {
     try {
+        if (!LiveStream) throw new Error('Database not connected');
         const { count } = req.body;
         const stream = await LiveStream.findOne({ userId: req.params.userId, active: true });
         if (stream) {
@@ -629,10 +569,97 @@ app.put('/api/live/:userId/viewers', async (req, res) => {
     }
 });
 
-// ============ LIVE JOIN REQUESTS ============
+app.post('/api/connect/:userId', async (req, res) => {
+    try {
+        if (!User) throw new Error('Database not connected');
+        const { userId } = req.params;
+        const { targetUserId } = req.body;
+        const targetUser = await User.findById(targetUserId);
+        if (!targetUser) return res.status(404).json({ error: 'User not found' });
+        if (targetUser.connections && targetUser.connections.includes(userId)) {
+            return res.status(400).json({ error: 'Already connected' });
+        }
+        if (targetUser.connectionRequests && targetUser.connectionRequests.includes(userId)) {
+            return res.status(400).json({ error: 'Request already sent' });
+        }
+        await User.findByIdAndUpdate(targetUserId, {
+            $push: { connectionRequests: userId }
+        });
+        res.json({ success: true, message: 'Connection request sent' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/connect/accept/:userId', async (req, res) => {
+    try {
+        if (!User) throw new Error('Database not connected');
+        const { userId } = req.params;
+        const { targetUserId } = req.body;
+        await User.findByIdAndUpdate(targetUserId, {
+            $pull: { connectionRequests: userId }
+        });
+        await User.findByIdAndUpdate(userId, {
+            $push: { connections: targetUserId }
+        });
+        await User.findByIdAndUpdate(targetUserId, {
+            $push: { connections: userId }
+        });
+        res.json({ success: true, message: 'Connection accepted' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/connect/decline/:userId', async (req, res) => {
+    try {
+        if (!User) throw new Error('Database not connected');
+        const { userId } = req.params;
+        const { targetUserId } = req.body;
+        await User.findByIdAndUpdate(targetUserId, {
+            $pull: { connectionRequests: userId }
+        });
+        res.json({ success: true, message: 'Connection declined' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/connect/disconnect/:userId', async (req, res) => {
+    try {
+        if (!User) throw new Error('Database not connected');
+        const { userId } = req.params;
+        const { targetUserId } = req.body;
+        await User.findByIdAndUpdate(userId, {
+            $pull: { connections: targetUserId }
+        });
+        await User.findByIdAndUpdate(targetUserId, {
+            $pull: { connections: userId }
+        });
+        res.json({ success: true, message: 'Disconnected' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/connect/requests/:userId', async (req, res) => {
+    try {
+        if (!User) throw new Error('Database not connected');
+        const { userId } = req.params;
+        const user = await User.findById(userId);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        const requests = await User.find({
+            _id: { $in: user.connectionRequests || [] }
+        }).select('-password');
+        res.json(requests);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 
 app.post('/api/live/join-request', async (req, res) => {
     try {
+        if (!User) throw new Error('Database not connected');
         const { fromUserId, toUserId } = req.body;
         const user = await User.findById(toUserId);
         if (!user) return res.status(404).json({ error: 'User not found' });
@@ -650,6 +677,7 @@ app.post('/api/live/join-request', async (req, res) => {
 
 app.post('/api/live/join-accept', async (req, res) => {
     try {
+        if (!User || !LiveStream) throw new Error('Database not connected');
         const { hostUserId, requesterUserId } = req.body;
         await User.findByIdAndUpdate(hostUserId, {
             $pull: { liveJoinRequests: { fromUserId: requesterUserId } }
@@ -666,6 +694,7 @@ app.post('/api/live/join-accept', async (req, res) => {
 
 app.post('/api/live/join-decline', async (req, res) => {
     try {
+        if (!User) throw new Error('Database not connected');
         const { hostUserId, requesterUserId } = req.body;
         await User.findByIdAndUpdate(hostUserId, {
             $pull: { liveJoinRequests: { fromUserId: requesterUserId } }
@@ -678,6 +707,7 @@ app.post('/api/live/join-decline', async (req, res) => {
 
 app.get('/api/live/join-requests/:userId', async (req, res) => {
     try {
+        if (!User) throw new Error('Database not connected');
         const { userId } = req.params;
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ error: 'User not found' });
@@ -693,4 +723,6 @@ app.get('/api/live/join-requests/:userId', async (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`📍 Health check: http://localhost:${PORT}/api/health`);
+    console.log(`📍 Agora token: POST http://localhost:${PORT}/api/agora-token`);
 });
