@@ -29,7 +29,7 @@ const UserSchema = new mongoose.Schema({
 });
 
 const PostSchema = new mongoose.Schema({
-    userId: { type: Number, required: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     userName: { type: String, required: true },
     userAvatar: { type: String, default: 'U' },
     content: { type: String, required: true },
@@ -46,7 +46,7 @@ const ShopItemSchema = new mongoose.Schema({
     description: { type: String, default: '' },
     image: { type: String },
     seller: { type: String, required: true },
-    sellerId: { type: Number, required: true },
+    sellerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     sellerAvatar: { type: String, default: 'U' },
     comments: { type: Array, default: [] },
     shares: { type: Number, default: 0 },
@@ -54,23 +54,23 @@ const ShopItemSchema = new mongoose.Schema({
 });
 
 const MessageSchema = new mongoose.Schema({
-    from: { type: Number, required: true },
+    from: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     fromName: { type: String, required: true },
-    to: { type: Number, required: true },
+    to: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     toName: { type: String, required: true },
     text: { type: String, required: true },
     time: { type: Date, default: Date.now }
 });
 
 const PhotoSchema = new mongoose.Schema({
-    userId: { type: Number, required: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     userName: { type: String, required: true },
     data: { type: String, required: true },
     time: { type: Date, default: Date.now }
 });
 
 const VideoSchema = new mongoose.Schema({
-    userId: { type: Number, required: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     userName: { type: String, required: true },
     data: { type: String, required: true },
     time: { type: Date, default: Date.now }
@@ -99,9 +99,7 @@ app.post('/api/register', async (req, res) => {
             return res.status(400).json({ error: 'Email already registered' });
         }
         const hashedPassword = await bcrypt.hash(password, 10);
-        const count = await User.countDocuments();
         const user = new User({
-            id: count + 1,
             name,
             email,
             password: hashedPassword,
@@ -109,7 +107,16 @@ app.post('/api/register', async (req, res) => {
         });
         await user.save();
         const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET || 'secret_key', { expiresIn: '7d' });
-        res.json({ success: true, user: { id: user.id, name, email, avatar: user.avatar }, token });
+        res.json({ 
+            success: true, 
+            user: { 
+                id: user._id, 
+                name, 
+                email, 
+                avatar: user.avatar 
+            }, 
+            token 
+        });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -127,7 +134,17 @@ app.post('/api/login', async (req, res) => {
             return res.status(400).json({ error: 'Invalid password' });
         }
         const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET || 'secret_key', { expiresIn: '7d' });
-        res.json({ success: true, user: { id: user.id, name: user.name, email, avatar: user.avatar, bio: user.bio || '' }, token });
+        res.json({ 
+            success: true, 
+            user: { 
+                id: user._id, 
+                name: user.name, 
+                email, 
+                avatar: user.avatar, 
+                bio: user.bio || '' 
+            }, 
+            token 
+        });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -140,7 +157,15 @@ app.post('/api/verify', async (req, res) => {
         const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret_key');
         const user = await User.findById(decoded.userId);
         if (!user) return res.status(401).json({ error: 'User not found' });
-        res.json({ user: { id: user.id, name: user.name, email: user.email, avatar: user.avatar, bio: user.bio || '' } });
+        res.json({ 
+            user: { 
+                id: user._id, 
+                name: user.name, 
+                email: user.email, 
+                avatar: user.avatar, 
+                bio: user.bio || '' 
+            } 
+        });
     } catch (error) {
         res.status(401).json({ error: 'Invalid token' });
     }
@@ -148,8 +173,8 @@ app.post('/api/verify', async (req, res) => {
 
 app.get('/api/users/:userId', async (req, res) => {
     try {
-        const userId = parseInt(req.params.userId);
-        const users = await User.find({ id: { $ne: userId } }, { password: 0 });
+        const userId = req.params.userId;
+        const users = await User.find({ _id: { $ne: userId } }, { password: 0 });
         res.json(users);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -158,8 +183,8 @@ app.get('/api/users/:userId', async (req, res) => {
 
 app.get('/api/user/:userId', async (req, res) => {
     try {
-        const userId = parseInt(req.params.userId);
-        const user = await User.findOne({ id: userId }, { password: 0 });
+        const userId = req.params.userId;
+        const user = await User.findById(userId, { password: 0 });
         if (!user) return res.status(404).json({ error: 'User not found' });
         res.json(user);
     } catch (error) {
@@ -169,9 +194,9 @@ app.get('/api/user/:userId', async (req, res) => {
 
 app.put('/api/user/:userId', async (req, res) => {
     try {
-        const userId = parseInt(req.params.userId);
+        const userId = req.params.userId;
         const { bio } = req.body;
-        const user = await User.findOneAndUpdate({ id: userId }, { bio }, { new: true }).select('-password');
+        const user = await User.findByIdAndUpdate(userId, { bio }, { new: true }).select('-password');
         res.json(user);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -253,8 +278,8 @@ app.post('/api/messages', async (req, res) => {
 
 app.get('/api/messages/:userId/:otherId', async (req, res) => {
     try {
-        const userId = parseInt(req.params.userId);
-        const otherId = parseInt(req.params.otherId);
+        const userId = req.params.userId;
+        const otherId = req.params.otherId;
         const messages = await Message.find({
             $or: [
                 { from: userId, to: otherId },
