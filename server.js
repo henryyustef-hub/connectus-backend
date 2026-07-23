@@ -4,17 +4,6 @@ const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 
-// Load Agora
-let RtcTokenBuilder, RtcRole;
-try {
-    const agora = require('agora-access-token');
-    RtcTokenBuilder = agora.RtcTokenBuilder;
-    RtcRole = agora.RtcRole;
-    console.log('✅ Agora package loaded');
-} catch (e) {
-    console.log('⚠️ Agora package not installed');
-}
-
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -112,56 +101,6 @@ const Message = mongoose.model('Message', MessageSchema);
 const Photo = mongoose.model('Photo', PhotoSchema);
 const Video = mongoose.model('Video', VideoSchema);
 const LiveStream = mongoose.model('LiveStream', LiveStreamSchema);
-
-// ============ AGORA TOKEN ENDPOINT ============
-app.post('/api/agora-token', (req, res) => {
-    try {
-        const { channelName, uid } = req.body;
-        console.log('🔑 Token request for channel:', channelName);
-        
-        if (!channelName) {
-            return res.status(400).json({ error: 'Channel name is required' });
-        }
-
-        // YOUR AGORA CREDENTIALS - Using the certificate you provided
-        const appId = '789090c67c234f5c899e50836a34ad26';
-        const appCertificate = '6150ca8d815b4609b33b23bc56fe2749';
-        
-        // Check if Agora package is available
-        if (!RtcTokenBuilder || typeof RtcTokenBuilder.buildTokenWithUid !== 'function') {
-            console.log('⚠️ Agora package not available, using simulated token');
-            return res.json({ 
-                token: 'simulated_token_' + Date.now(), 
-                note: 'Simulated mode - install agora-access-token for real tokens' 
-            });
-        }
-
-        const role = RtcRole.PUBLISHER;
-        const expirationTimeInSeconds = 3600;
-        const currentTimestamp = Math.floor(Date.now() / 1000);
-        const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
-
-        const token = RtcTokenBuilder.buildTokenWithUid(
-            appId, 
-            appCertificate, 
-            channelName, 
-            uid || 0, 
-            role, 
-            privilegeExpiredTs
-        );
-        
-        console.log('✅ Token generated successfully');
-        res.json({ token });
-    } catch (error) {
-        console.error('❌ Error generating Agora token:', error);
-        // Always return a token (simulated) so frontend doesn't break
-        res.json({ 
-            token: 'simulated_token_' + Date.now(), 
-            error: error.message,
-            note: 'Using simulated token'
-        });
-    }
-});
 
 // ============ AUTH ============
 
