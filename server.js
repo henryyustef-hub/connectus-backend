@@ -247,16 +247,13 @@ app.post('/api/verify', async (req, res) => {
 
 // ============ LIVE STREAM ENDPOINTS ============
 
-// Start a live stream
 app.post('/api/live/start', async (req, res) => {
     try {
         const { userId, userName, channel } = req.body;
         if (!userId || !channel) {
             return res.status(400).json({ error: 'userId and channel required' });
         }
-        // End any existing live streams for this user
         await LiveStream.updateMany({ userId, active: true }, { active: false });
-        // Create new live stream
         const stream = new LiveStream({
             userId,
             userName: userName || 'User',
@@ -266,7 +263,6 @@ app.post('/api/live/start', async (req, res) => {
             joinedUsers: []
         });
         await stream.save();
-        // Also create a post for this live
         const post = new Post({
             userId,
             userName: userName || 'User',
@@ -283,7 +279,6 @@ app.post('/api/live/start', async (req, res) => {
     }
 });
 
-// Stop a live stream
 app.post('/api/live/stop', async (req, res) => {
     try {
         const { userId } = req.body;
@@ -291,7 +286,6 @@ app.post('/api/live/stop', async (req, res) => {
             return res.status(400).json({ error: 'userId required' });
         }
         await LiveStream.updateOne({ userId, active: true }, { active: false });
-        // Also mark posts as not live
         await Post.updateMany({ userId, isLive: true }, { isLive: false });
         res.json({ success: true, message: 'Live stream stopped' });
     } catch (error) {
@@ -300,7 +294,6 @@ app.post('/api/live/stop', async (req, res) => {
     }
 });
 
-// Stop all lives (admin)
 app.post('/api/live/stop-all', async (req, res) => {
     try {
         await LiveStream.updateMany({ active: true }, { active: false });
@@ -311,7 +304,6 @@ app.post('/api/live/stop-all', async (req, res) => {
     }
 });
 
-// Get all active live streams
 app.get('/api/live/active', async (req, res) => {
     try {
         const streams = await LiveStream.find({ active: true });
@@ -322,7 +314,6 @@ app.get('/api/live/active', async (req, res) => {
     }
 });
 
-// Get a specific live stream
 app.get('/api/live/:userId', async (req, res) => {
     try {
         const stream = await LiveStream.findOne({ 
@@ -339,7 +330,6 @@ app.get('/api/live/:userId', async (req, res) => {
     }
 });
 
-// Update viewers count
 app.put('/api/live/:userId/viewers', async (req, res) => {
     try {
         const { count } = req.body;
